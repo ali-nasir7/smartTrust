@@ -1,0 +1,142 @@
+spring:
+  application:
+    name: smarttrust-backend
+
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/smarttrust?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8mb4}
+    username: ${root}
+    password: ${Artist@2005}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      leak-detection-threshold: 2000
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        default_batch_fetch_size: 100
+        jdbc.time_zone: UTC
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+# JWT
+smarttrust:
+  jwt:
+    secret: ${JWT_SECRET:dev-jwt-secret-must-be-at-least-64-chars-long-for-hs256-alg-0123456789AB}
+    access-expiration-ms: 900000 # 15 min
+    refresh-expiration-ms: 604800000 # 7 days
+    issuer: smarttrust-api
+
+  otp:
+    length: 6
+    expiry-minutes: 5
+    max-attempts: 3
+    mock-enabled: true # Logs OTP to console for FYP testing
+
+  security:
+    bcrypt-strength: 12
+    max-failed-login-attempts: 5
+    lock-time-minutes: 15
+    refresh-token-length-bytes: 48
+
+  rate-limit:
+    login-bucket-capacity: 5
+    login-refill-minutes: 15
+
+server:
+  port: 8080
+  compression:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.smarttrust: DEBUG
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level [%X{correlationId}] %logger{36} - %msg%n"
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
+---
+# LOCAL PROFILE: MySQL local
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/smarttrust?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${root}
+    password: ${Artist@2005}
+  jpa:
+    show-sql: true
+logging:
+  level:
+    com.smarttrust: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+
+---
+# POSTGRESQL PROFILE: if you want to switch to Postgres later
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smarttrust}
+    username: ${DB_USER:smarttrust}
+    password: ${DB_PASS:smarttrust123}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: false
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;MODE=MySQL
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+  sql:
+    init:
+      mode: never
+smarttrust:
+  jwt:
+    secret: test-jwt-secret-must-be-at-least-64-chars-long-for-hs256-test-1234567890AB
+  otp:
+    mock-enabled: true

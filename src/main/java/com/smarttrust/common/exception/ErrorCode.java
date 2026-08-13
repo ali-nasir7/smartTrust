@@ -1,0 +1,34 @@
+package com.smarttrust.common.exception;
+
+/**
+ * Enterprise error codes — stable, machine-readable, frontend can map to messages.
+ */
+public enum ErrorCode {
+    // Auth
+    AUTH_INVALID_CREDENTIALS,
+    AUTH_PHONE_ALREADY_EXISTS,
+    AUTH_OTP_EXPIRED,
+    AUTH_OTP_INVALID,
+    AUTH_OTP_MAX_ATTEMPTS,
+    AUTH_OTP_NOT_FOUND,
+    AUTH_ACCOUNT_LOCKED,
+    AUTH_ACCOUNT_NOT_ACTIVE,
+    AUTH_ACCOUNT_SUSPENDED,
+    AUTH_ACCOUNT_BANNED,
+    AUTH_PHONE_NOT_VERIFIED,
+    AUTH_REFRESH_TOKEN_INVALID,
+    AUTH_REFRESH_TOKEN_EXPIRED,
+    AUTH_REFRESH_TOKEN_REVOKED,
+    AUTH_TOO_MANY_REQUESTS,
+
+    // Validation & Common
+    VALIDATION_FAILED,
+    RESOURCE_NOT_FOUND,
+    CONFLICT,
+    FORBIDDEN,
+    UNAUTHORIZED,
+    RATE_LIMIT_EXCEEDED,
+
+    // System
+    INTERNAL_ERROR
+}

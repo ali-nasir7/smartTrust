@@ -1,0 +1,14 @@
+.env
+uploads/
+*.log
+target/
+.idea/
+*.iml
+.DS_Store
+.mvn/
+mvnw
+mvnw.cmd
+.settings/
+.factorypath
+.classpath
+.project
