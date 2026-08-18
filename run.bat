@@ -1,26 +1,25 @@
 @echo off
-REM SmartTrust Auth Module - Run Script for Windows
-REM Requires Java 23 and Maven 3.9.9
+REM SmartTrust Backend v2 - Run Script for Windows (Java 23 + Maven 3.9.9)
+REM Prereqs: MySQL 8 running, schema executed, .env file created (see .env.example)
 
-echo === SmartTrust Auth Module ===
-echo Checking Java version...
+echo === SmartTrust Backend v2 (Email OTP + Provider Verification) ===
 java --version
-echo.
-echo Checking Maven version...
 mvn --version
-echo.
 
-echo Setting environment variables (dev defaults)...
-set DB_URL=jdbc:postgresql://localhost:5432/smarttrust
-set DB_USER=smarttrust
-set DB_PASS=smarttrust123
-set JWT_SECRET=dev-jwt-secret-must-be-at-least-64-chars-long-for-hs256-alg-0123456789AB
-set CNIC_ENCRYPTION_KEY=dev-aes-key-32-chars-long-123456789
+if not exist .env (
+    echo WARNING: .env not found. Copy .env.example to .env and fill values.
+    pause
+    exit /b 1
+)
 
-echo Building project...
-mvn clean compile
+echo Building...
+call mvn clean compile
+if %errorlevel% neq 0 (
+    echo BUILD FAILED
+    pause
+    exit /b 1
+)
 
-echo Running with local profile...
-mvn spring-boot:run -Dspring-boot.run.profiles=local
-
+echo Starting (local profile)...
+call mvn spring-boot:run -Dspring-boot.run.profiles=local
 pause

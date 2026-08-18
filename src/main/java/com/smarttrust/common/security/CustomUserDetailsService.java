@@ -22,10 +22,15 @@ public class CustomUserDetailsService implements UserDetailsService {
         User user = userRepository.findByPhone(phone)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found with phone: " + phone));
 
+        String role = user.getRole() != null ? user.getRole().name() : null;
+        var authorities = role != null
+                ? List.of(new SimpleGrantedAuthority("ROLE_" + role))
+                : List.<SimpleGrantedAuthority>of();
+
         return new org.springframework.security.core.userdetails.User(
                 user.getPhone(),
                 user.getPasswordHash(),
-                List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
+                authorities
         );
     }
 
@@ -34,7 +39,7 @@ public class CustomUserDetailsService implements UserDetailsService {
         return UserPrincipal.builder()
                 .id(user.getId())
                 .phone(user.getPhone())
-                .role(user.getRole().name())
+                .role(user.getRole() != null ? user.getRole().name() : null)
                 .status(user.getStatus().name())
                 .phoneVerified(user.isPhoneVerified())
                 .build();

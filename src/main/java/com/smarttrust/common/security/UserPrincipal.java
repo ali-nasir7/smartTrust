@@ -8,6 +8,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 @Getter
@@ -17,12 +18,16 @@ public class UserPrincipal implements UserDetails {
 
     private final Long id;
     private final String phone;
-    private final String role;
+    private final String role;   // null until the user selects a role after email verification
     private final String status;
     private final boolean phoneVerified;
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
+        // Null-safe: role is absent between email verification and /select-role
+        if (role == null || role.isBlank()) {
+            return Collections.emptyList();
+        }
         return List.of(new SimpleGrantedAuthority("ROLE_" + role));
     }
 
@@ -41,7 +46,7 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public boolean isAccountNonLocked() {
-        return !status.equals("SUSPENDED") && !status.equals("BANNED");
+        return !"SUSPENDED".equals(status) && !"BANNED".equals(status);
     }
 
     @Override
@@ -49,6 +54,6 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public boolean isEnabled() {
-        return status.equals("ACTIVE") || status.equals("PENDING");
+        return "ACTIVE".equals(status) || "PENDING".equals(status);
     }
 }

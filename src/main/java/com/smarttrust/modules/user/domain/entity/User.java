@@ -36,11 +36,15 @@ public class User {
     @Column(name = "email_verified", nullable = false)
     private boolean emailVerified = false;
 
+    /** Optional at registration (v2) — customer/provider profile forms are authoritative. */
+    @Column(name = "full_name", length = 120)
+    private String fullName;
+
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "role", nullable = false, length = 30)
+    @Column(name = "role", length = 30) // nullable since v2 — chosen after email verification
     private UserRole role;
 
     @Enumerated(EnumType.STRING)

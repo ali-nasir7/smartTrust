@@ -31,7 +31,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 var claims = tokenProvider.validateAndParse(jwt);
                 Long userId = Long.parseLong(claims.getSubject());
                 String phone = claims.get("phone", String.class);
-                String role = claims.get("role", String.class);
+                String role = claims.get("role", String.class);   // null until role selection
                 String status = claims.get("status", String.class);
 
                 UserPrincipal principal = UserPrincipal.builder()

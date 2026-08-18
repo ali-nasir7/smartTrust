@@ -1,3 +1,5 @@
+> **UPDATED (v2):** The registration flow now uses EMAIL OTP + role selection + provider verification. See **SETUP-GUIDE.md** for current commands and endpoints.
+
 # Windows Quick Start
 
 1. Install PostgreSQL 15, create DB `smarttrust`

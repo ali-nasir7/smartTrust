@@ -1,3 +1,5 @@
+> **UPDATED (v2):** The registration flow now uses EMAIL OTP + role selection + provider verification. See **SETUP-GUIDE.md** for current commands and endpoints.
+
 # SmartTrust Auth Module — Manual Postman Testing Guide
 ### FYP Module 1 | Java 23 + Spring Boot 3.4.5 | PostgreSQL manual SQL
 

@@ -39,7 +39,7 @@ public class JwtTokenProvider {
         } catch (Exception e) {
             // Treat as plain UTF-8 string, ensure length >=64
             if (jwtSecret.length() < 32) {
-                log.warn("JWT secret too short, padding. Please provide 64+ chars in env.");
+                log.warn("JWT secret too short — provide a 64+ char secret via JWT_SECRET env var.");
             }
             this.key = Keys.hmacShaKeyFor(jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
@@ -50,16 +50,18 @@ public class JwtTokenProvider {
         Instant now = Instant.now();
         Instant expiry = now.plusMillis(accessExpirationMs);
 
-        return Jwts.builder()
+        JwtBuilder builder = Jwts.builder()
                 .subject(userId.toString())
                 .issuer(issuer)
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(expiry))
-                .claim("phone", phone)
-                .claim("role", role)
-                .claim("status", status)
-                .signWith(key)
-                .compact();
+                .expiration(Date.from(expiry));
+
+        // Role may be null between email verification and /select-role — omit the claim entirely
+        if (phone != null) builder = builder.claim("phone", phone);
+        if (role != null) builder = builder.claim("role", role);
+        if (status != null) builder = builder.claim("status", status);
+
+        return builder.signWith(key).compact();
     }
 
     public Claims validateAndParse(String token) {
@@ -73,7 +75,7 @@ public class JwtTokenProvider {
         } catch (ExpiredJwtException ex) {
             throw BusinessException.of(ErrorCode.AUTH_REFRESH_TOKEN_EXPIRED, org.springframework.http.HttpStatus.UNAUTHORIZED, "JWT expired");
         } catch (JwtException ex) {
-            throw BusinessException.of(ErrorCode.AUTH_REFRESH_TOKEN_INVALID, org.springframework.http.HttpStatus.UNAUTHORIZED, "Invalid JWT: " + ex.getMessage());
+            throw BusinessException.of(ErrorCode.AUTH_REFRESH_TOKEN_INVALID, org.springframework.http.HttpStatus.UNAUTHORIZED, "Invalid JWT");
         }
     }
 

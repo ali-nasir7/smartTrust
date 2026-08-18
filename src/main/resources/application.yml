@@ -2,10 +2,21 @@ spring:
   application:
     name: smarttrust-backend
 
+  # Loads a .env file (KEY=VALUE lines) from the project root if present.
+  # Never commit .env — see .env.example
+  config:
+    import: optional:file:.env[.properties]
+
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: ${UPLOAD_MAX_FILE_MB:5}MB
+      max-request-size: ${UPLOAD_MAX_REQUEST_MB:20}MB
+
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/smarttrust?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8mb4}
-    username: ${root}
-    password: ${Artist@2005}
+    username: ${DB_USER:root}
+    password: ${DB_PASS:}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 20
@@ -25,6 +36,23 @@ spring:
         jdbc.time_zone: UTC
         dialect: org.hibernate.dialect.MySQLDialect
 
+  # SMTP — all values come from environment variables (.env), never hardcoded.
+  # See .env.example for Gmail App Password setup.
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:true}
+          starttls:
+            enable: ${SMTP_STARTTLS:true}
+          connectiontimeout: ${SMTP_TIMEOUT_MS:5000}
+          timeout: ${SMTP_TIMEOUT_MS:5000}
+          writetimeout: ${SMTP_TIMEOUT_MS:5000}
+
   jackson:
     serialization:
       write-dates-as-timestamps: false
@@ -35,15 +63,22 @@ spring:
 smarttrust:
   jwt:
     secret: ${JWT_SECRET:dev-jwt-secret-must-be-at-least-64-chars-long-for-hs256-alg-0123456789AB}
-    access-expiration-ms: 900000 # 15 min
-    refresh-expiration-ms: 604800000 # 7 days
+    access-expiration-ms: ${JWT_ACCESS_EXPIRATION_MS:900000} # 15 min
+    refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:604800000} # 7 days
     issuer: smarttrust-api
 
   otp:
-    length: 6
-    expiry-minutes: 5
-    max-attempts: 3
-    mock-enabled: true # Logs OTP to console for FYP testing
+    length: ${OTP_LENGTH:6}
+    expiry-minutes: ${OTP_EXPIRY_MINUTES:5}
+    max-attempts: ${OTP_MAX_ATTEMPTS:3}
+    resend-cooldown-seconds: ${OTP_RESEND_COOLDOWN_SECONDS:60}
+    # DEV ONLY: logs OTP to console when SMTP is not configured.
+    # OTP is NEVER returned in API responses. Keep false in production.
+    mock-enabled: ${OTP_MOCK_ENABLED:false}
+
+  mail:
+    from: ${MAIL_FROM:noreply@smarttrust.pk}
+    from-name: ${MAIL_FROM_NAME:SmartTrust}
 
   security:
     bcrypt-strength: 12
@@ -54,6 +89,17 @@ smarttrust:
   rate-limit:
     login-bucket-capacity: 5
     login-refill-minutes: 15
+
+  storage:
+    upload-dir: ${UPLOAD_DIR:./uploads}
+    max-file-size-bytes: ${UPLOAD_MAX_FILE_BYTES:5242880} # 5MB default (value in bytes)
+    allowed-content-types: image/jpeg,image/png,image/webp
+
+  # Optional admin bootstrap (creates first ADMIN if phone not registered; no-op when unset)
+  admin:
+    phone: ${ADMIN_PHONE:}
+    email: ${ADMIN_EMAIL:}
+    password: ${ADMIN_PASSWORD:}
 
 server:
   port: 8080
@@ -85,21 +131,20 @@ springdoc:
     tags-sorter: alpha
 
 ---
-# LOCAL PROFILE: MySQL local
+# LOCAL PROFILE: MySQL local dev
 spring:
   config:
     activate:
       on-profile: local
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/smarttrust?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
-    username: ${root}
-    password: ${Artist@2005}
+    username: ${DB_USER:root}
+    password: ${DB_PASS:}
   jpa:
     show-sql: true
 logging:
   level:
     com.smarttrust: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
 
 ---
 # POSTGRESQL PROFILE: if you want to switch to Postgres later
@@ -119,6 +164,7 @@ spring:
     show-sql: false
 
 ---
+# TEST PROFILE: H2 in-memory
 spring:
   config:
     activate:
@@ -140,3 +186,6 @@ smarttrust:
     secret: test-jwt-secret-must-be-at-least-64-chars-long-for-hs256-test-1234567890AB
   otp:
     mock-enabled: true
+  mail:
+    from: test@smarttrust.pk
+    from-name: SmartTrust Test

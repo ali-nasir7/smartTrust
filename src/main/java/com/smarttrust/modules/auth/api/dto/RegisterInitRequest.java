@@ -10,17 +10,25 @@ public record RegisterInitRequest(
                 message = "Phone must be valid PK format: 03XXXXXXXXX or +923XXXXXXXXX")
         String phone,
 
+        @NotBlank(message = "Email is required")
+        @Email(message = "Email must be valid", regexp = "^[\\w.+-]+@[\\w-]+\\.[\\w.-]+$")
+        @Size(max = 190, message = "Email max 190 chars")
+        String email,
+
         @NotBlank(message = "Password is required")
         @Size(min = 8, max = 100, message = "Password must be 8-100 chars")
-        // Optional strong password pattern: at least 1 upper, 1 lower, 1 digit
         @Pattern(regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{8,}$",
                 message = "Password must contain at least 1 uppercase, 1 lowercase and 1 digit")
         String password,
 
-        @NotNull(message = "Role is required")
+        /**
+         * Optional (v2): the user chooses CUSTOMER or SERVICE_PROVIDER AFTER email
+         * verification via /api/v1/auth/select-role. Kept for backward compatibility —
+         * if an old client sends it, the role is set immediately.
+         */
         UserRole role,
 
-        @NotBlank(message = "Full name is required")
+        /** Optional convenience — the profile forms (customer/provider) are authoritative. */
         @Size(min = 2, max = 120, message = "Full name 2-120 chars")
         String fullName
 

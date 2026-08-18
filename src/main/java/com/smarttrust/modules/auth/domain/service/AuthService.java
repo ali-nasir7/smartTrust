@@ -5,7 +5,13 @@ import jakarta.servlet.http.HttpServletRequest;
 
 public interface AuthService {
 
-    RegisterInitResponse registerInit(RegisterInitRequest request, HttpServletRequest httpRequest);
+    OtpSentResponse registerInit(RegisterInitRequest request, HttpServletRequest httpRequest);
+
+    /** Resends the REGISTRATION OTP to the user's email (respects cooldown + rate limits). */
+    OtpSentResponse resendRegistrationOtp(ResendOtpRequest request);
+
+    /** Step after email verification: user selects CUSTOMER or SERVICE_PROVIDER. Returns fresh tokens. */
+    AuthResponse selectRole(SelectRoleRequest request, HttpServletRequest httpRequest);
 
     AuthResponse verifyOtp(VerifyOtpRequest request, HttpServletRequest httpRequest);
 
@@ -15,7 +21,7 @@ public interface AuthService {
 
     void logout(RefreshRequest request, HttpServletRequest httpRequest);
 
-    RegisterInitResponse forgotPasswordInit(ForgotPasswordInitRequest request);
+    OtpSentResponse forgotPasswordInit(ForgotPasswordInitRequest request);
 
     void forgotPasswordReset(ForgotPasswordResetRequest request);
 }

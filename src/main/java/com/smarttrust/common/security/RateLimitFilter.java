@@ -36,8 +36,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
         // Match endpoints
         if (path.endsWith("/auth/login")) {
             type = RateLimitService.EndpointType.LOGIN;
-        } else if (path.endsWith("/auth/register/init")) {
-            type = RateLimitService.EndpointType.REGISTER;
+        } else if (path.endsWith("/auth/register/init") || path.endsWith("/auth/register/resend-otp")) {
+            type = RateLimitService.EndpointType.REGISTER; // covers unlimited-request prevention for OTP
         } else if (path.endsWith("/auth/verify-otp")) {
             type = RateLimitService.EndpointType.OTP_VERIFY;
         } else if (path.contains("/forgot-password")) {

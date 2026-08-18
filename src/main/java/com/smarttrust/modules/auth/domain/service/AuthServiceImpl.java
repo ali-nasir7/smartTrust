@@ -2,7 +2,9 @@ package com.smarttrust.modules.auth.domain.service;
 
 import com.smarttrust.common.exception.BusinessException;
 import com.smarttrust.common.exception.ErrorCode;
+import com.smarttrust.common.mail.EmailService;
 import com.smarttrust.common.security.JwtTokenProvider;
+import com.smarttrust.common.security.SecurityUtils;
 import com.smarttrust.modules.auth.api.dto.*;
 import com.smarttrust.modules.auth.domain.entity.LoginAttempt;
 import com.smarttrust.modules.auth.domain.entity.OtpCode;
@@ -10,7 +12,6 @@ import com.smarttrust.modules.auth.domain.enums.OtpPurpose;
 import com.smarttrust.modules.auth.domain.event.UserLoggedInEvent;
 import com.smarttrust.modules.auth.domain.event.UserRegisteredEvent;
 import com.smarttrust.modules.auth.infrastructure.persistence.LoginAttemptRepository;
-import com.smarttrust.modules.auth.infrastructure.persistence.OtpCodeRepository;
 import com.smarttrust.modules.user.domain.entity.User;
 import com.smarttrust.modules.user.domain.enums.UserRole;
 import com.smarttrust.modules.user.domain.enums.UserStatus;
@@ -25,9 +26,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Locale;
 
 @Slf4j
 @Service
@@ -35,20 +36,18 @@ import java.time.temporal.ChronoUnit;
 public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
-    private final OtpCodeRepository otpCodeRepository;
     private final LoginAttemptRepository loginAttemptRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
+    private final OtpService otpService;
+    private final EmailService emailService;
     private final ApplicationEventPublisher eventPublisher;
 
     @Value("${smarttrust.otp.expiry-minutes:5}")
     private int otpExpiryMinutes;
 
-    @Value("${smarttrust.otp.max-attempts:3}")
-    private int otpMaxAttempts;
-
-    @Value("${smarttrust.otp.mock-enabled:true}")
+    @Value("${smarttrust.otp.mock-enabled:false}")
     private boolean otpMockEnabled;
 
     @Value("${smarttrust.security.max-failed-login-attempts:5}")
@@ -57,18 +56,16 @@ public class AuthServiceImpl implements AuthService {
     @Value("${smarttrust.security.lock-time-minutes:15}")
     private int lockTimeMinutes;
 
-    private final SecureRandom secureRandom = new SecureRandom();
-
-    // ---- REGISTER INIT ----
+    // ---- REGISTER INIT (email + phone; OTP delivered by EMAIL) ----
 
     @Override
     @Transactional
-    public RegisterInitResponse registerInit(RegisterInitRequest request, HttpServletRequest httpRequest) {
+    public OtpSentResponse registerInit(RegisterInitRequest request, HttpServletRequest httpRequest) {
         String phone = normalizePhone(request.phone());
+        String email = normalizeEmail(request.email());
 
-        // Check phone unique
+        // Phone unique (deleted users may re-register)
         if (userRepository.existsByPhone(phone)) {
-            // Check if user exists but status DELETED? Our exists includes deleted, but we allow reuse if deleted?
             var existing = userRepository.findByPhone(phone);
             if (existing.isPresent() && existing.get().getStatus() != UserStatus.DELETED) {
                 throw BusinessException.of(ErrorCode.AUTH_PHONE_ALREADY_EXISTS, HttpStatus.CONFLICT,
@@ -76,106 +73,172 @@ public class AuthServiceImpl implements AuthService {
             }
         }
 
-        // Validate role: ADMIN not allowed via public registration (only dev)
-        if (request.role() == UserRole.ADMIN) {
-            // For FYP, allow ADMIN only if env var? We'll block for security; use separate seed.
-            throw BusinessException.of(ErrorCode.FORBIDDEN, HttpStatus.FORBIDDEN, "Admin registration not allowed via public API");
+        // Email unique (deleted users may re-register)
+        if (userRepository.existsByEmail(email)) {
+            var existingByEmail = userRepository.findByEmail(email);
+            if (existingByEmail.isPresent() && existingByEmail.get().getStatus() != UserStatus.DELETED) {
+                throw BusinessException.of(ErrorCode.AUTH_EMAIL_ALREADY_EXISTS, HttpStatus.CONFLICT,
+                        "Email already registered");
+            }
         }
 
-        // Hash password
-        String passwordHash = passwordEncoder.encode(request.password());
+        // Validate role: ADMIN not allowed via public registration
+        if (request.role() == UserRole.ADMIN) {
+            throw BusinessException.of(ErrorCode.FORBIDDEN, HttpStatus.FORBIDDEN,
+                    "Admin registration not allowed via public API");
+        }
 
         User user = User.builder()
                 .phone(phone)
+                .email(email)
+                .fullName(request.fullName())
                 .phoneVerified(false)
-                .passwordHash(passwordHash)
-                .role(request.role())
+                .emailVerified(false)
+                .passwordHash(passwordEncoder.encode(request.password()))
+                .role(request.role()) // nullable since v2 — selected after OTP verification
                 .status(UserStatus.PENDING)
                 .build();
 
         User savedUser = userRepository.save(user);
 
-        // Generate OTP
-        String plainOtp = generateOtp();
-        String otpHash = passwordEncoder.encode(plainOtp);
+        // OTP: hashed at rest, emailed to user, old codes superseded, NEVER in the API response
+        var otp = otpService.generateOtp(phone, email, OtpPurpose.REGISTRATION);
+        deliverOtpByEmail(email, otp.plainOtp(), "Registration");
 
-        OtpCode otpCode = OtpCode.builder()
-                .phone(phone)
-                .otpHash(otpHash)
-                .purpose(OtpPurpose.REGISTRATION)
-                .expiresAt(Instant.now().plus(otpExpiryMinutes, ChronoUnit.MINUTES))
-                .attempts(0)
-                .verified(false)
-                .build();
+        eventPublisher.publishEvent(new UserRegisteredEvent(this, savedUser.getId(), phone,
+                savedUser.getRole() != null ? savedUser.getRole().name() : "UNSELECTED", null));
 
-        otpCodeRepository.save(otpCode);
+        log.info("Register init OK phone={} email={} userId={}", phone, EmailService.maskEmail(email), savedUser.getId());
 
-        log.info("📲 REGISTER OTP phone={} otp={} (mock, expires in {} min) userId={}",
-                phone, plainOtp, otpExpiryMinutes, savedUser.getId());
-
-        // Publish event
-        eventPublisher.publishEvent(new UserRegisteredEvent(this, savedUser.getId(), phone, savedUser.getRole().name(), plainOtp));
-
-        return new RegisterInitResponse(
+        return new OtpSentResponse(
                 savedUser.getId(),
                 phone,
-                savedUser.getRole().name(),
-                "OTP sent to phone. Verify within " + otpExpiryMinutes + " minutes.",
-                otpCode.getExpiresAt(),
-                otpMockEnabled ? plainOtp : null // Only for FYP testing
+                EmailService.maskEmail(email),
+                "Verification code sent to your email. Verify within " + otpExpiryMinutes + " minutes.",
+                otp.entity().getExpiresAt(),
+                otp.resendAvailableAt()
         );
     }
 
-    // ---- VERIFY OTP ----
+    // ---- RESEND OTP (cooldown enforced) ----
+
+    @Override
+    @Transactional
+    public OtpSentResponse resendRegistrationOtp(ResendOtpRequest request) {
+        String phone = normalizePhone(request.phone());
+
+        User user = userRepository.findByPhone(phone)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found"));
+
+        if (user.getStatus() != UserStatus.PENDING) {
+            throw BusinessException.of(ErrorCode.CONFLICT, HttpStatus.CONFLICT,
+                    "Account already verified. Please login.");
+        }
+        if (user.getEmail() == null || user.getEmail().isBlank()) {
+            throw BusinessException.of(ErrorCode.CONFLICT, HttpStatus.CONFLICT,
+                    "No email on file for this account. Please register again.");
+        }
+
+        // Cooldown: latest OTP must be older than resend-cooldown-seconds
+        var latest = otpService.findLatestOtp(phone, OtpPurpose.REGISTRATION);
+        if (latest.isPresent()) {
+            Instant availableAt = latest.get().getCreatedAt()
+                    .plus(otpServiceCooldownSeconds(), ChronoUnit.SECONDS);
+            if (Instant.now().isBefore(availableAt)) {
+                long wait = java.time.Duration.between(Instant.now(), availableAt).getSeconds() + 1;
+                throw BusinessException.of(ErrorCode.AUTH_OTP_RESEND_COOLDOWN, HttpStatus.TOO_MANY_REQUESTS,
+                        "Please wait " + wait + " seconds before requesting a new code.");
+            }
+        }
+
+        var otp = otpService.generateOtp(phone, user.getEmail(), OtpPurpose.REGISTRATION); // supersedes old OTP
+        deliverOtpByEmail(user.getEmail(), otp.plainOtp(), "Registration resend");
+
+        return new OtpSentResponse(
+                user.getId(),
+                phone,
+                EmailService.maskEmail(user.getEmail()),
+                "New verification code sent to your email.",
+                otp.entity().getExpiresAt(),
+                otp.resendAvailableAt()
+        );
+    }
+
+    // ---- VERIFY OTP (activates account + marks email verified) ----
 
     @Override
     @Transactional
     public AuthResponse verifyOtp(VerifyOtpRequest request, HttpServletRequest httpRequest) {
         String phone = normalizePhone(request.phone());
-        String plainOtp = request.otp();
 
         User user = userRepository.findByPhone(phone)
-                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found"));
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found"));
 
         if (user.getStatus() == UserStatus.DELETED) {
             throw BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found");
         }
 
-        OtpCode otpCode = otpCodeRepository.findTopByPhoneAndPurposeAndVerifiedFalseOrderByCreatedAtDesc(phone, OtpPurpose.REGISTRATION)
+        OtpCode otpCode = otpService.findActiveOtp(phone, OtpPurpose.REGISTRATION)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.AUTH_OTP_NOT_FOUND, HttpStatus.NOT_FOUND,
-                        "No valid OTP found. Please request new OTP."));
+                        "No active OTP found. Please request a new OTP."));
 
-        // Check expiry
-        if (otpCode.isExpired()) {
-            throw BusinessException.of(ErrorCode.AUTH_OTP_EXPIRED, HttpStatus.BAD_REQUEST, "OTP expired. Please request new one.");
-        }
-        if (otpCode.isMaxAttemptsReached(otpMaxAttempts)) {
-            throw BusinessException.of(ErrorCode.AUTH_OTP_MAX_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS,
-                    "Max attempts reached. Request new OTP.");
-        }
+        otpService.verifyOtp(otpCode, request.otp()); // throws on invalid/expired/max attempts
+        otpService.markVerified(otpCode);             // single-use: consumed
 
-        // Verify hash
-        if (!passwordEncoder.matches(plainOtp, otpCode.getOtpHash())) {
-            otpCode.incrementAttempts();
-            otpCodeRepository.save(otpCode);
-            throw BusinessException.of(ErrorCode.AUTH_OTP_INVALID, HttpStatus.BAD_REQUEST,
-                    "Invalid OTP. Attempts: " + otpCode.getAttempts() + "/" + otpMaxAttempts);
-        }
-
-        // Success
-        otpCode.markVerified();
-        otpCodeRepository.save(otpCode);
-
-        user.activate(); // sets status ACTIVE + phoneVerified true
+        user.activate();              // status ACTIVE + phoneVerified
+        user.setEmailVerified(true);  // email verified — this was an EMAIL OTP
         userRepository.save(user);
 
-        // Generate tokens
         String ip = getClientIp(httpRequest);
         var refreshResult = refreshTokenService.createRefreshToken(user.getId(), ip, "verify-otp");
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(),
+                roleOrNull(user), user.getStatus().name());
 
-        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(), user.getRole().name(), user.getStatus().name());
+        log.info("User email-verified and activated phone={} userId={}", phone, user.getId());
 
-        log.info("✅ User verified phone={} userId={}", phone, user.getId());
+        return buildAuthResponse(user, accessToken, refreshResult.rawToken(), refreshResult.entity().getExpiresAt());
+    }
+
+    // ---- SELECT ROLE (after email verification; CUSTOMER or SERVICE_PROVIDER) ----
+
+    @Override
+    @Transactional
+    public AuthResponse selectRole(SelectRoleRequest request, HttpServletRequest httpRequest) {
+        Long userId = currentUserId();
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found"));
+
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw BusinessException.of(ErrorCode.AUTH_EMAIL_NOT_VERIFIED, HttpStatus.FORBIDDEN,
+                    "Verify your email before selecting a role.");
+        }
+        if (request.role() == UserRole.ADMIN) {
+            throw BusinessException.of(ErrorCode.FORBIDDEN, HttpStatus.FORBIDDEN,
+                    "ADMIN cannot be selected via this endpoint.");
+        }
+        if (user.getRole() != null) {
+            if (user.getRole() == request.role()) {
+                throw BusinessException.of(ErrorCode.AUTH_ROLE_ALREADY_SELECTED, HttpStatus.CONFLICT,
+                        "Role already selected: " + user.getRole());
+            }
+            throw BusinessException.of(ErrorCode.AUTH_ROLE_ALREADY_SELECTED, HttpStatus.CONFLICT,
+                    "Role already selected (" + user.getRole() + ") and cannot be changed. Contact support.");
+        }
+
+        user.setRole(request.role());
+        userRepository.save(user);
+
+        // Issue fresh tokens so the new JWT carries the role claim
+        String ip = getClientIp(httpRequest);
+        var refreshResult = refreshTokenService.createRefreshToken(user.getId(), ip, "select-role");
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(),
+                user.getRole().name(), user.getStatus().name());
+
+        log.info("Role selected userId={} role={}", user.getId(), user.getRole());
 
         return buildAuthResponse(user, accessToken, refreshResult.rawToken(), refreshResult.entity().getExpiresAt());
     }
@@ -193,13 +256,12 @@ public class AuthServiceImpl implements AuthService {
         long failedCount = loginAttemptRepository.countByPhoneAndSuccessFalseAndAttemptedAtAfter(phone, lockWindow);
 
         if (failedCount >= maxFailedAttempts) {
-            log.warn("🔒 Account locked due to brute force phone={} ip={} failedCount={}", phone, ip, failedCount);
+            log.warn("Account locked (brute force) phone={} ip={} failedCount={}", phone, ip, failedCount);
             throw BusinessException.of(ErrorCode.AUTH_ACCOUNT_LOCKED, HttpStatus.LOCKED,
                     "Account locked due to too many failed attempts. Try again after " + lockTimeMinutes + " minutes.");
         }
 
-        User user = userRepository.findByPhone(phone)
-                .orElse(null);
+        User user = userRepository.findByPhone(phone).orElse(null);
 
         boolean passwordMatches = false;
         if (user != null) {
@@ -207,36 +269,31 @@ public class AuthServiceImpl implements AuthService {
         }
 
         if (user == null || !passwordMatches) {
-            // Record failed attempt
             loginAttemptRepository.save(LoginAttempt.builder()
                     .phone(phone)
                     .ipAddress(ip)
                     .success(false)
                     .attemptedAt(Instant.now())
                     .build());
-
             throw BusinessException.of(ErrorCode.AUTH_INVALID_CREDENTIALS, HttpStatus.UNAUTHORIZED,
                     "Invalid phone or password");
         }
 
-        // Check status
         if (user.getStatus() == UserStatus.PENDING) {
             throw BusinessException.of(ErrorCode.AUTH_PHONE_NOT_VERIFIED, HttpStatus.FORBIDDEN,
-                    "Phone not verified. Please verify OTP.");
+                    "Email not verified. Please verify your account with the OTP sent to your email.");
         }
         if (user.getStatus() == UserStatus.SUSPENDED) {
             throw BusinessException.of(ErrorCode.AUTH_ACCOUNT_SUSPENDED, HttpStatus.FORBIDDEN,
                     "Account suspended. Contact admin.");
         }
         if (user.getStatus() == UserStatus.BANNED) {
-            throw BusinessException.of(ErrorCode.AUTH_ACCOUNT_BANNED, HttpStatus.FORBIDDEN,
-                    "Account banned.");
+            throw BusinessException.of(ErrorCode.AUTH_ACCOUNT_BANNED, HttpStatus.FORBIDDEN, "Account banned.");
         }
         if (user.getStatus() == UserStatus.DELETED) {
             throw BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found");
         }
 
-        // Success - record attempt
         loginAttemptRepository.save(LoginAttempt.builder()
                 .phone(phone)
                 .ipAddress(ip)
@@ -247,14 +304,13 @@ public class AuthServiceImpl implements AuthService {
         user.recordLogin();
         userRepository.save(user);
 
-        // Generate tokens
         var refreshResult = refreshTokenService.createRefreshToken(user.getId(), ip, request.deviceInfo());
-
-        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(), user.getRole().name(), user.getStatus().name());
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(),
+                roleOrNull(user), user.getStatus().name());
 
         eventPublisher.publishEvent(new UserLoggedInEvent(this, user.getId(), phone, ip));
 
-        log.info("✅ Login success phone={} userId={} ip={}", phone, user.getId(), ip);
+        log.info("Login success phone={} userId={} ip={}", phone, user.getId(), ip);
 
         return buildAuthResponse(user, accessToken, refreshResult.rawToken(), refreshResult.entity().getExpiresAt());
     }
@@ -264,24 +320,24 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public AuthResponse refresh(RefreshRequest request, HttpServletRequest httpRequest) {
-        String rawToken = request.refreshToken();
         String ip = getClientIp(httpRequest);
 
-        var oldToken = refreshTokenService.findByRawTokenOrThrow(rawToken);
+        var oldToken = refreshTokenService.findByRawTokenOrThrow(request.refreshToken());
 
         User user = userRepository.findById(oldToken.getUserId())
-                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found"));
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found"));
 
         if (!user.isActive()) {
             throw BusinessException.of(ErrorCode.AUTH_ACCOUNT_NOT_ACTIVE, HttpStatus.FORBIDDEN, "User not active");
         }
 
-        // Rotation
         var newResult = refreshTokenService.rotateRefreshToken(oldToken, ip, "refresh");
+        String newAccessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(),
+                roleOrNull(user), user.getStatus().name());
 
-        String newAccessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getPhone(), user.getRole().name(), user.getStatus().name());
-
-        log.info("🔄 Refresh rotation userId={} oldId={} newId={}", user.getId(), oldToken.getId(), newResult.entity().getId());
+        log.info("Refresh rotation userId={} oldId={} newId={}",
+                user.getId(), oldToken.getId(), newResult.entity().getId());
 
         return buildAuthResponse(user, newAccessToken, newResult.rawToken(), newResult.entity().getExpiresAt());
     }
@@ -292,50 +348,42 @@ public class AuthServiceImpl implements AuthService {
         try {
             var token = refreshTokenService.findByRawTokenOrThrow(request.refreshToken());
             refreshTokenService.revokeToken(token);
-            log.info("🚪 Logout success userId={}", token.getUserId());
+            log.info("Logout success userId={}", token.getUserId());
         } catch (BusinessException ex) {
-            // Idempotent logout: if token invalid, still return success (don't leak)
+            // Idempotent logout: invalid token still returns 204 (don't leak token state)
             log.warn("Logout with invalid token: {}", ex.getMessage());
         }
     }
 
-    // ---- FORGOT PASSWORD ----
+    // ---- FORGOT PASSWORD (OTP delivered by EMAIL) ----
 
     @Override
     @Transactional
-    public RegisterInitResponse forgotPasswordInit(ForgotPasswordInitRequest request) {
+    public OtpSentResponse forgotPasswordInit(ForgotPasswordInitRequest request) {
         String phone = normalizePhone(request.phone());
 
         User user = userRepository.findByPhone(phone)
-                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found with phone: " + phone));
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found with phone: " + phone));
 
         if (user.getStatus() == UserStatus.DELETED) {
             throw BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found");
         }
+        if (user.getEmail() == null || user.getEmail().isBlank()) {
+            throw BusinessException.of(ErrorCode.CONFLICT, HttpStatus.CONFLICT,
+                    "No email on file. Cannot send reset code.");
+        }
 
-        String plainOtp = generateOtp();
-        String otpHash = passwordEncoder.encode(plainOtp);
+        var otp = otpService.generateOtp(phone, user.getEmail(), OtpPurpose.FORGOT_PASSWORD);
+        deliverOtpByEmail(user.getEmail(), otp.plainOtp(), "Forgot password");
 
-        OtpCode otpCode = OtpCode.builder()
-                .phone(phone)
-                .otpHash(otpHash)
-                .purpose(OtpPurpose.FORGOT_PASSWORD)
-                .expiresAt(Instant.now().plus(otpExpiryMinutes, ChronoUnit.MINUTES))
-                .attempts(0)
-                .verified(false)
-                .build();
-
-        otpCodeRepository.save(otpCode);
-
-        log.info("🔐 FORGOT PASSWORD OTP phone={} otp={} userId={}", phone, plainOtp, user.getId());
-
-        return new RegisterInitResponse(
+        return new OtpSentResponse(
                 user.getId(),
                 phone,
-                user.getRole().name(),
-                "OTP sent for password reset. Valid for " + otpExpiryMinutes + " minutes.",
-                otpCode.getExpiresAt(),
-                otpMockEnabled ? plainOtp : null
+                EmailService.maskEmail(user.getEmail()),
+                "Password reset code sent to your email. Valid for " + otpExpiryMinutes + " minutes.",
+                otp.entity().getExpiresAt(),
+                otp.resendAvailableAt()
         );
     }
 
@@ -343,29 +391,17 @@ public class AuthServiceImpl implements AuthService {
     @Transactional
     public void forgotPasswordReset(ForgotPasswordResetRequest request) {
         String phone = normalizePhone(request.phone());
-        String plainOtp = request.otp();
 
         User user = userRepository.findByPhone(phone)
-                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND, "User not found"));
+                .orElseThrow(() -> BusinessException.of(ErrorCode.RESOURCE_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "User not found"));
 
-        OtpCode otpCode = otpCodeRepository.findTopByPhoneAndPurposeAndVerifiedFalseOrderByCreatedAtDesc(phone, OtpPurpose.FORGOT_PASSWORD)
-                .orElseThrow(() -> BusinessException.of(ErrorCode.AUTH_OTP_NOT_FOUND, HttpStatus.NOT_FOUND, "No OTP found"));
+        OtpCode otpCode = otpService.findActiveOtp(phone, OtpPurpose.FORGOT_PASSWORD)
+                .orElseThrow(() -> BusinessException.of(ErrorCode.AUTH_OTP_NOT_FOUND, HttpStatus.NOT_FOUND,
+                        "No active reset code found. Please request a new one."));
 
-        if (otpCode.isExpired()) {
-            throw BusinessException.of(ErrorCode.AUTH_OTP_EXPIRED, HttpStatus.BAD_REQUEST, "OTP expired");
-        }
-        if (otpCode.isMaxAttemptsReached(otpMaxAttempts)) {
-            throw BusinessException.of(ErrorCode.AUTH_OTP_MAX_ATTEMPTS, HttpStatus.TOO_MANY_REQUESTS, "Max attempts reached");
-        }
-        if (!passwordEncoder.matches(plainOtp, otpCode.getOtpHash())) {
-            otpCode.incrementAttempts();
-            otpCodeRepository.save(otpCode);
-            throw BusinessException.of(ErrorCode.AUTH_OTP_INVALID, HttpStatus.BAD_REQUEST, "Invalid OTP");
-        }
-
-        // Valid -> reset password
-        otpCode.markVerified();
-        otpCodeRepository.save(otpCode);
+        otpService.verifyOtp(otpCode, request.otp());
+        otpService.markVerified(otpCode);
 
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
         userRepository.save(user);
@@ -373,37 +409,54 @@ public class AuthServiceImpl implements AuthService {
         // Security: revoke all refresh tokens to force re-login on all devices
         refreshTokenService.revokeAllByUserId(user.getId());
 
-        log.info("✅ Password reset success phone={} userId={}", phone, user.getId());
+        log.info("Password reset success phone={} userId={}", phone, user.getId());
     }
 
     // ---- HELPERS ----
 
-    private String generateOtp() {
-        int otp = 100000 + secureRandom.nextInt(900000);
-        return String.valueOf(otp);
+    private void deliverOtpByEmail(String email, String plainOtp, String flowLabel) {
+        boolean sent = emailService.sendOtpEmail(email, plainOtp, otpExpiryMinutes);
+        if (!sent && !otpMockEnabled) {
+            // Mail could not be delivered (SMTP not configured / failure). User can use resend once fixed.
+            log.error("OTP email delivery FAILED for flow={} recipient={} — check SMTP configuration (SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD)",
+                    flowLabel, EmailService.maskEmail(email));
+        }
+    }
+
+    private Long currentUserId() {
+        return SecurityUtils.currentUserId();
+    }
+
+    private static String roleOrNull(User user) {
+        return user.getRole() != null ? user.getRole().name() : null;
+    }
+
+    private int otpServiceCooldownSeconds() {
+        return otpService.getResendCooldownSeconds();
     }
 
     private String normalizePhone(String phone) {
         if (phone == null) return null;
         phone = phone.trim();
-        // Convert 03xx to +923xx? For MVP keep as is, but normalize to 03 format? We'll just keep.
-        // If starts with +923, convert to 03 for consistency? Let's keep both but unique check should handle both?
-        // For simplicity, if +923... -> convert to 03...
         if (phone.startsWith("+923") && phone.length() == 13) {
             return "0" + phone.substring(3); // +923001234567 -> 03001234567
         }
         return phone;
     }
 
+    private String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
+    }
+
     private AuthResponse buildAuthResponse(User user, String accessToken, String refreshToken, Instant refreshExpiresAt) {
         return new AuthResponse(
                 user.getId(),
                 user.getPhone(),
-                user.getRole().name(),
+                roleOrNull(user),
                 user.getStatus().name(),
                 accessToken,
                 refreshToken,
-                900, // 15min in seconds, could be from config
+                900, // access token lifetime in seconds (15 min)
                 Instant.now().plus(15, ChronoUnit.MINUTES),
                 refreshExpiresAt
         );

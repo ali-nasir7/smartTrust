@@ -1,79 +1,193 @@
 {
   "info": {
-    "name": "SmartTrust Auth Module - FYP",
+    "name": "SmartTrust v2 — Auth + Provider Verification",
+    "description": "Email-OTP registration, role selection, customer/provider onboarding, CNIC+selfie admin verification. Set the 'baseUrl' variable. Login first for authenticated folders.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "adminAccessToken", "value": "" },
+    { "key": "providerProfileId", "value": "1" }
+  ],
   "item": [
     {
-      "name": "Register Init",
-      "request": {
-        "method": "POST",
-        "header": [{"key":"Content-Type","value":"application/json"}],
-        "body": {
-          "mode":"raw",
-          "raw":"{\n  \"phone\": \"03001234567\",\n  \"password\": \"Test@1234\",\n  \"role\": \"CUSTOMER\",\n  \"fullName\": \"Ali Nasir\"\n}"
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register Init (email OTP)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/register/init", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "register", "init"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\",\n  \"email\": \"you@gmail.com\",\n  \"password\": \"Test@1234\",\n  \"fullName\": \"Ali Raza\"\n}" }
+          }
         },
-        "url": {"raw":"{{baseUrl}}/api/v1/auth/register/init","host":["{{baseUrl}}"],"path":["api","v1","auth","register","init"]}
-      }
+        {
+          "name": "Resend OTP (60s cooldown)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/register/resend-otp", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "register", "resend-otp"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\"\n}" }
+          }
+        },
+        {
+          "name": "Verify Email OTP",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/verify-otp", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "verify-otp"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\",\n  \"otp\": \"123456\"\n}" }
+          }
+        },
+        {
+          "name": "Select Role (JWT)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/select-role", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "select-role"] },
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"SERVICE_PROVIDER\"\n}" }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\",\n  \"password\": \"Test@1234\"\n}" }
+          }
+        },
+        { "name": "Me (JWT)", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/users/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "me"] } } },
+        {
+          "name": "Refresh",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "refresh"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "logout"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" }
+          }
+        },
+        {
+          "name": "Forgot Password Init (email OTP)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/forgot-password/init", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "forgot-password", "init"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\"\n}" }
+          }
+        },
+        {
+          "name": "Forgot Password Reset",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/forgot-password/reset", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "forgot-password", "reset"] },
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"03011111111\",\n  \"otp\": \"123456\",\n  \"newPassword\": \"NewTest@1234\"\n}" }
+          }
+        }
+      ]
     },
     {
-      "name": "Verify OTP",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"phone\": \"03001234567\",\n  \"otp\": \"123456\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/verify-otp","host":["{{baseUrl}}"],"path":["api","v1","auth","verify-otp"]}
-      }
+      "name": "Customer",
+      "item": [
+        {
+          "name": "Save My Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/customers/profile", "host": ["{{baseUrl}}"], "path": ["api", "v1", "customers", "profile"] },
+            "body": { "mode": "raw", "raw": "{\n  \"fullName\": \"Ali Raza\",\n  \"address\": \"House 12, Street 4\",\n  \"city\": \"Rawalpindi\"\n}" }
+          }
+        },
+        { "name": "Get My Profile", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/customers/profile", "host": ["{{baseUrl}}"], "path": ["api", "v1", "customers", "profile"] } } }
+      ]
     },
     {
-      "name": "Login",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"phone\": \"03001234567\",\n  \"password\": \"Test@1234\",\n  \"deviceInfo\": \"Postman Windows\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/login","host":["{{baseUrl}}"],"path":["api","v1","auth","login"]}
-      }
+      "name": "Provider",
+      "item": [
+        { "name": "List Categories", "request": { "method": "GET", "url": { "raw": "{{baseUrl}}/api/v1/categories", "host": ["{{baseUrl}}"], "path": ["api", "v1", "categories"] } } },
+        {
+          "name": "Save My Profile (detailed form)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/providers/profile", "host": ["{{baseUrl}}"], "path": ["api", "v1", "providers", "profile"] },
+            "body": { "mode": "raw", "raw": "{\n  \"fullName\": \"Kamran Iqbal\",\n  \"categoryId\": 1,\n  \"experienceYears\": 5,\n  \"skills\": [\"Wiring\", \"Fan install\"],\n  \"bio\": \"Certified electrician\",\n  \"address\": \"Plaza 9, Saddar\",\n  \"city\": \"Karachi\"\n}" }
+          }
+        },
+        { "name": "Get My Profile (status + rejection reason)", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/providers/profile", "host": ["{{baseUrl}}"], "path": ["api", "v1", "providers", "profile"] } } },
+        {
+          "name": "Upload Documents (CNIC front + back + selfie)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/providers/documents", "host": ["{{baseUrl}}"], "path": ["api", "v1", "providers", "documents"] },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "cnicFront", "type": "file", "src": [] },
+                { "key": "cnicBack", "type": "file", "src": [] },
+                { "key": "selfie", "type": "file", "src": [] }
+              ]
+            }
+          }
+        },
+        { "name": "My Documents (metadata)", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/providers/documents", "host": ["{{baseUrl}}"], "path": ["api", "v1", "providers", "documents"] } } }
+      ]
     },
     {
-      "name": "Refresh",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/refresh","host":["{{baseUrl}}"],"path":["api","v1","auth","refresh"]}
-      }
-    },
-    {
-      "name": "Logout",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/logout","host":["{{baseUrl}}"],"path":["api","v1","auth","logout"]}
-      }
-    },
-    {
-      "name": "Forgot Password Init",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"phone\": \"03001234567\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/forgot-password/init","host":["{{baseUrl}}"],"path":["api","v1","auth","forgot-password","init"]}
-      }
-    },
-    {
-      "name": "Forgot Password Reset",
-      "request": {
-        "method":"POST",
-        "header":[{"key":"Content-Type","value":"application/json"}],
-        "body":{"mode":"raw","raw":"{\n  \"phone\": \"03001234567\",\n  \"otp\": \"123456\",\n  \"newPassword\": \"NewPass@1234\"\n}"},
-        "url":{"raw":"{{baseUrl}}/api/v1/auth/forgot-password/reset","host":["{{baseUrl}}"],"path":["api","v1","auth","forgot-password","reset"]}
-      }
+      "name": "Admin",
+      "item": [
+        { "name": "Providers — Pending Review", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/admin/providers?status=PENDING_REVIEW", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "providers"], "query": [{ "key": "status", "value": "PENDING_REVIEW" }] } } },
+        { "name": "Provider Detail", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/admin/providers/{{providerProfileId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "providers", "{{providerProfileId}}"] } } },
+        { "name": "Approve", "request": { "method": "POST", "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/admin/providers/{{providerProfileId}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "providers", "{{providerProfileId}}", "approve"] } } },
+        {
+          "name": "Reject (with reason)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/providers/{{providerProfileId}}/reject", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "providers", "{{providerProfileId}}", "reject"] },
+            "body": { "mode": "raw", "raw": "{\n  \"reason\": \"CNIC photo is blurred\"\n}" }
+          }
+        },
+        { "name": "View Document File", "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }], "url": { "raw": "{{baseUrl}}/api/v1/admin/providers/documents/1/file", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "providers", "documents", "1", "file"] } } },
+        {
+          "name": "Create Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/categories", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "categories"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Solar Installer\",\n  \"description\": \"Solar panels and inverters\"\n}" }
+          }
+        }
+      ]
     }
-  ],
-  "variable": [
-    {"key":"baseUrl","value":"http://localhost:8080"},
-    {"key":"refreshToken","value":""},
-    {"key":"accessToken","value":""}
   ]
 }

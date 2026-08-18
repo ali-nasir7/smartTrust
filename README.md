@@ -1,8 +1,16 @@
-# SmartTrust Backend — Auth Module (Enterprise)
+# SmartTrust Backend — Auth (Email OTP) + Customer/Provider Onboarding + Admin Verification
 
-**Stack:** Java 23 + Spring Boot 3.4.5 + PostgreSQL/MySQL + Spring Security + JWT + BCrypt12 + Bucket4j Rate Limiting + Swagger OpenAPI
+**Stack:** Java 23 + Spring Boot 3.4.x + MySQL 8 + Spring Security + JWT + BCrypt12 + Caffeine Rate Limiting + SMTP Email OTP + Swagger OpenAPI
 
-This is **Module 1** of SmartTrust Modular Monolith — built 100% per FYP requirements.
+**v2 highlights** (see `SETUP-GUIDE.md` for the full walk-through):
+
+- Registration takes **phone + email + password**; the **OTP is emailed** (branded *SmartTrust — Verify Your Email*).
+- OTP: SecureRandom, 5-min expiry, single-use, 60-s resend cooldown, max 3 attempts, old code invalidated on resend, BCrypt-hashed at rest, **never in API responses or production logs** (all values env-configurable).
+- After verifying, the user **selects a role**: `CUSTOMER` or `SERVICE_PROVIDER` (`POST /api/v1/auth/select-role`, returns fresh JWT).
+- **Customer** completes a short form (`/api/v1/customers/profile`).
+- **Service Provider** completes a detailed form (`/api/v1/providers/profile`), uploads **CNIC front + back + selfie** (`/api/v1/providers/documents`) → status `PENDING_REVIEW`.
+- **Admin** reviews (`/api/v1/admin/providers`), **approves** (→ `APPROVED`/Verified) or **rejects with a reason** (provider may resubmit).
+- Gmail SMTP delivery via App Password; **credentials only via env/`.env`** (see `.env.example`).
 
 ## 📁 Folder Structure (Modular Monolith)
 
@@ -10,198 +18,64 @@ This is **Module 1** of SmartTrust Modular Monolith — built 100% per FYP requi
 com.smarttrust
 ├── SmartTrustApplication.java
 ├── common/
-│   ├── config/         -> SecurityConfig, WebConfig, CacheConfig, OpenApiConfig, JacksonConfig
-│   ├── security/       -> JwtTokenProvider, JwtAuthenticationFilter, RateLimitService, RateLimitFilter, UserPrincipal, CustomUserDetailsService
+│   ├── config/         -> SecurityConfig, WebConfig, CacheConfig, OpenApiConfig, JacksonConfig, FilterConfig
+│   ├── security/       -> JwtTokenProvider, JwtAuthenticationFilter, RateLimitService/Filter, UserPrincipal,
+│   │                      CustomUserDetailsService, SecurityUtils
+│   ├── mail/           -> EmailService (branded OTP email, SMTP via env)
+│   ├── storage/        -> FileStorageService (CNIC/selfie uploads, type+magic-byte checks)
 │   ├── exception/      -> ErrorCode, BusinessException, ApiError, GlobalExceptionHandler
-│   ├── audit/          -> Auditable base
-│   ├── validation/     -> ValidEnum
-│   └── util/           -> CorrelationIdFilter
+│   ├── audit/ | validation/ | util/
 └── modules/
-    ├── auth/
-    │   ├── api/        -> AuthController + DTOs
-    │   ├── domain/
-    │   │   ├── entity/ -> RefreshToken, OtpCode, LoginAttempt
-    │   │   ├── enums/  -> OtpPurpose
-    │   │   ├── event/  -> UserRegisteredEvent, UserLoggedInEvent
-    │   │   └── service/-> AuthService, OtpService, RefreshTokenService
-    │   └── infrastructure/
-    │       └── persistence/ -> Repos
-    └── user/
-        ├── domain/
-        │   ├── entity/ -> User (core identity)
-        │   └── enums/  -> UserRole, UserStatus
-        └── infrastructure/
-            └── persistence/ -> UserRepository
+    ├── auth/           -> register (email OTP) / resend / verify / select-role / login / refresh / logout / forgot-password
+    ├── user/           -> User entity (phone+email+role nullable), /users/me, AdminUserSeeder
+    ├── customer/       -> short profile form (customer_profiles)
+    └── provider/       -> categories, provider profiles, CNIC/selfie documents, admin review
 ```
 
-## 🗄️ Database (Manual SQL, no Flyway as requested)
+## 🗄️ Database (MySQL 8, manual SQL — no Flyway per project convention)
 
-Run file: `src/main/resources/schema-auth.sql` manually in pgAdmin / DBeaver / MySQL Workbench.
+- **Fresh install:** run `src/main/resources/schema-auth.sql`
+- **Upgrade existing v1 DB:** run `src/main/resources/db/upgrade-v2.sql`
 
-- PostgreSQL primary (with `CREATE EXTENSION pgcrypto`)
-- MySQL version commented in same file
+Tables: `users` (role nullable until selection, full_name added) · `auth_otp_codes` (+email, superseded_at) ·
+`auth_refresh_tokens` · `auth_login_attempts` · `service_categories` (seeded) · `customer_profiles` ·
+`service_provider_profiles` · `provider_documents`.
 
-Tables:
-- `users` — core identity, phone unique (03XXXXXXXXX or +923XXXXXXXXX), BCrypt12 password
-- `auth_otp_codes` — OTP hashed with BCrypt, 5min expiry, max 3 attempts
-- `auth_refresh_tokens` — opaque token SHA-256 hashed, 7d expiry, rotation
-- `auth_login_attempts` — brute-force audit, 5 fails → 15min lock
+## 🔐 v2 Registration Flow
 
-## 🔐 Auth Flow — Enterprise Implementation
-
-### 1. Register Init `POST /api/v1/auth/register/init`
-- Validates PK phone regex `^(\\+923\\d{9}|03\\d{9})$` + password 8+ with uppercase/lowercase/digit
-- Phone normalization: `+923001234567` → `03001234567`
-- Checks unique (excluding DELETED)
-- Creates user PENDING, hashes password BCrypt 12
-- Generates 6-digit OTP SecureRandom, hashes BCrypt, saves with 5min expiry
-- Logs OTP to console (mockEnabled=true for FYP) + publishes `UserRegisteredEvent`
-- Returns `mockOtpForTesting` in dev
-
-### 2. Verify OTP `POST /api/v1/auth/verify-otp`
-- Finds latest not-verified OTP for phone+REGISTRATION
-- Checks expiry, attempts <3
-- Verifies BCrypt match, increment attempts on fail
-- On success: marks OTP verified, user ACTIVE + phoneVerified=true
-- Creates refresh token: 48 random bytes Base64Url, SHA-256 hash stored, 7d expiry
-- Generates JWT access token HS256 15m with claims: sub=userId, phone, role, status, issuer=smarttrust-api
-- Returns AuthResponse
-
-### 3. Login `POST /api/v1/auth/login`
-- Brute-force check: count failed attempts last 15min >=5 → 423 LOCKED
-- Verifies password BCrypt
-- Checks status: PENDING → 403 phone not verified, SUSPENDED/BANNED → 403
-- Records attempt success/fail in `auth_login_attempts`
-- Issues new access + refresh (rotation future)
-- Publishes `UserLoggedInEvent`
-
-### 4. Refresh `POST /api/v1/auth/refresh`
-- Hashes raw refresh token SHA-256, finds in DB
-- Checks revoked, expired
-- Rotation: revokes old, creates new refresh + new access
-- Returns new pair
-
-### 5. Logout `POST /api/v1/auth/logout`
-- Idempotent revoke, always 204 even if invalid
-
-### 6. Forgot Password
-- Init `/forgot-password/init`: generates OTP purpose FORGOT_PASSWORD
-- Reset `/forgot-password/reset`: verifies OTP + sets new password BCrypt, revokes ALL refresh tokens (force re-login)
-
-## 🛡️ Security Features
-
-- **Password:** BCrypt strength 12
-- **OTP:** 6-digit SecureRandom, BCrypt hashed, never stored plain, 5min expiry, 3 attempts max
-- **Refresh Token:** Opaque random 48 bytes, stored SHA-256 hex, unique constraint, rotation invalidates old
-- **JWT:** HS256, 64+ chars secret from env `JWT_SECRET`, 15m expiry, issuer validation, claims minimal
-- **Brute Force:** DB `auth_login_attempts` + Caffeine Bucket4j RateLimitFilter per IP (login 5/15min)
-- **Rate Limit Headers:** `X-Rate-Limit-Remaining`, `X-Rate-Limit-Retry-After-Seconds`
-- **CorrelationId:** Filter generates UUID, MDC logging, header `X-Correlation-Id`
-- **CORS:** Allowed all for FYP (set env in prod)
-- **Validation:** Bean validation + custom regex for PK phones
-- **Error Responses:** Uniform `ApiError {timestamp,status,errorCode,message,path,traceId,fieldErrors}` never leaks stacktrace
-
-## 🚀 How to Run (Windows Maven 3.9.9 + Java 23)
-
-### Prerequisites
-- Java 23 JDK
-- Maven 3.9.9
-- PostgreSQL 15+ (or MySQL 8+) running on localhost:5432
-- Create DB: `CREATE DATABASE smarttrust;`
-
-### Steps
-```cmd
-# 1. Clone / copy project
-cd smarttrust-backend
-
-# 2. Configure DB in .env or directly in application.yml
-# Edit src/main/resources/application.yml or set env vars:
-# DB_URL=jdbc:postgresql://localhost:5432/smarttrust
-# DB_USER=smarttrust
-# DB_PASS=smarttrust123
-# JWT_SECRET=dev-jwt-secret-must-be-at-least-64-chars-long-for-hs256-alg-0123456789AB
-# For MySQL use: DB_URL=jdbc:mysql://localhost:3306/smarttrust
-
-# 3. Run SQL schema manually
-# Open pgAdmin -> Query Tool -> run contents of src/main/resources/schema-auth.sql
-
-# 4. Build
-mvn clean compile
-
-# 5. Run (local profile)
-mvn spring-boot:run -Dspring-boot.run.profiles=local
-
-# App starts on http://localhost:8080
-# Swagger: http://localhost:8080/swagger-ui.html
-# Health: http://localhost:8080/actuator/health
-# OpenAPI JSON: http://localhost:8080/v3/api-docs
+```
+POST /api/v1/auth/register/init   {phone, email, password, fullName?}
+        └─> user PENDING, OTP emailed (never in response)
+POST /api/v1/auth/register/resend-otp   {phone}          (60s cooldown, old OTP dies)
+POST /api/v1/auth/verify-otp      {phone, otp}           -> ACTIVE + tokens (role may be null)
+POST /api/v1/auth/select-role     {role}    [JWT]        -> role set + fresh tokens
+   ├─ CUSTOMER        -> POST /api/v1/customers/profile  {fullName, address, city}     done
+   └─ SERVICE_PROVIDER-> POST /api/v1/providers/profile  {fullName, categoryId, experienceYears, skills[], bio, address, city}
+                        -> POST /api/v1/providers/documents  multipart cnicFront/cnicBack/selfie
+                           └─> PENDING_REVIEW
+Admin: GET /api/v1/admin/providers?status=PENDING_REVIEW
+       POST .../approve  |  POST .../reject {reason}  (resubmission supported)
 ```
 
-### Test via cURL / Postman
+## 🚀 Run (Windows, Java 23.0.1 + Maven 3.9.9)
 
-Import `docs/SmartTrust-Auth.postman_collection.json` (create from Swagger or use examples below)
+1. MySQL: run the schema SQL (above) in Workbench.
+2. `copy .env.example .env` and fill DB/SMTP/admin values (Gmail App Password — see SETUP-GUIDE.md §2).
+3. `mvn clean compile`
+4. `mvn spring-boot:run -Dspring-boot.run.profiles=local`
+5. Swagger: http://localhost:8080/swagger-ui.html · Health: `/actuator/health`
 
-```bash
-# Register
-curl -X POST http://localhost:8080/api/v1/auth/register/init \
- -H "Content-Type: application/json" \
- -d '{"phone":"03001234567","password":"Test@1234","role":"CUSTOMER","fullName":"Ali Nasir"}'
+## 🛡️ Security Features (carried over / extended from v1)
 
-# Response gives mockOtpForTesting e.g., 123456 (dev only) + userId
-
-# Verify OTP
-curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
- -H "Content-Type: application/json" \
- -d '{"phone":"03001234567","otp":"123456"}'
-
-# Returns accessToken + refreshToken
-
-# Login
-curl -X POST http://localhost:8080/api/v1/auth/login \
- -H "Content-Type: application/json" \
- -d '{"phone":"03001234567","password":"Test@1234"}'
-
-# Refresh
-curl -X POST http://localhost:8080/api/v1/auth/refresh \
- -H "Content-Type: application/json" \
- -d '{"refreshToken":"<rawRefreshToken>"}'
-
-# Access protected endpoint (example, after you add other modules)
-curl http://localhost:8080/api/v1/users/me -H "Authorization: Bearer <accessToken>"
-```
-
-## 🧪 Tests
-
-```cmd
-mvn test
-```
-
-Unit tests included:
-- `JwtTokenProviderTest` — generate/validate/expiry
-- `OtpServiceTest` — OTP hashing, expiry, max attempts logic
-- `AuthServiceBruteForceTest` — lock after 5 fails
-
-Integration: `AuthIntegrationTest` with H2 (test profile)
-
-## 📌 Enterprise Notes (Why no Flyway)
-
-You requested "don't use migrated db use sql" — so we provide raw `schema-auth.sql` for manual execution (enterprise teams sometimes use DBA-reviewed SQL). For production modular monolith, Flyway is RECOMMENDED (as per handbook Part 13). You can add later:
-
-```xml
-<dependency>flyway-core</dependency> + flyway-database-postgresql
-```
-
-And move SQL to `V1__users_and_auth.sql`.
+BCrypt12 passwords · hashed OTPs · opaque SHA-256 refresh tokens with rotation · JWT HS256 15-min access tokens ·
+brute-force lockout (5 fails/15 min → 423) · per-IP rate limits (login 5/15m, register+resend 10/h, verify 20/15m,
+forgot 5/30m) · correlation IDs · uniform `ApiError` responses · document files stored outside the webroot with
+generated names, extension+magic-byte validation and admin-only serving.
 
 ## 🔜 Next Modules
 
-- Customer module (profile + location)
-- Provider module (CNIC encryption + Tasdeeq mock)
-- Request module (hyperlocal tier logic)
-
-All will reuse `users` table and `JwtTokenProvider`.
+Marketplace requests/hyperlocal matching, Trust Score, AI ranking, notifications — to be built on the
+`users`/`customer_profiles`/`service_provider_profiles` base above.
 
 ## 🧑‍💻 Author
-
 Ali Nasir — SmartTrust FYP Backend — Hamdard University
-Module 1 Auth — 100% enterprise blueprint implemented
