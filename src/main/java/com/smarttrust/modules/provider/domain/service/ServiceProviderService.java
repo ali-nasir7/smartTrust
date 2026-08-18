@@ -75,7 +75,7 @@ public class ServiceProviderService {
     @Transactional(readOnly = true)
     public ProviderProfileResponse getMyProfile(Long userId) {
         return profileRepository.findByUserId(userId)
-                .map(ServiceProviderService::toResponse)
+                .map(this::toResponse)
                 .orElseThrow(() -> BusinessException.of(ErrorCode.PROVIDER_PROFILE_NOT_FOUND, HttpStatus.NOT_FOUND,
                         "Provider profile not completed yet"));
     }
@@ -129,7 +129,7 @@ public class ServiceProviderService {
         Page<ServiceProviderProfile> page = status != null
                 ? profileRepository.findByVerificationStatus(status, pageable)
                 : profileRepository.findAllByOrderByUpdatedAtDesc(pageable);
-        return PageResponse.of(page.map(ServiceProviderService::toAdminSummary));
+        return PageResponse.of(page.map(this::toAdminSummary));
     }
 
     @Transactional(readOnly = true)
@@ -161,7 +161,7 @@ public class ServiceProviderService {
 
     @Transactional(readOnly = true)
     public List<CategoryResponse> listActiveCategories() {
-        return categoryRepository.findByIsActiveTrueOrderByNameAsc().stream()
+        return categoryRepository.findByActiveTrueOrderByNameAsc().stream()
                 .map(c -> new CategoryResponse(c.getId(), c.getName(), c.getDescription()))
                 .toList();
     }
